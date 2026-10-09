@@ -119,3 +119,8 @@ return `isError: true`; subsequent requests still work. Malformed JSON returns `
 
 Exports complete synchronously. A `progressToken` on a call and `notifications/cancelled` are
 harmlessly ignored; this server does not provide background export progress or cancellation.
+
+Clients using MCP 2026-07-28 (in `initialize` or per-request `_meta`) receive `resultType: "complete"`,
+`ttlMs`, and `cacheScope: "private"` on tool/resource lists and resource reads. Document and command
+reads use a zero TTL because their state can change; catalogs use ten minutes. Older clients keep
+the original response shape.

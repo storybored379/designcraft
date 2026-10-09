@@ -9,7 +9,8 @@ use crate::tools::{call_tool, tool_definitions, unknown_argument};
 
 /// The MCP revision we implement.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
-const SUPPORTED_VERSIONS: &[&str] = &[PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
+const MODERN_VERSION: &str = "2026-07-28";
+const SUPPORTED_VERSIONS: &[&str] = &[MODERN_VERSION, PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -34,6 +35,7 @@ pub const COMMANDS_URI: &str = "designcraft://commands";
 pub struct Server {
     backend: Box<dyn Backend>,
     initialized: bool,
+    modern: bool,
 }
 
 fn response(id: Value, result: Value) -> Value {
@@ -46,7 +48,7 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 
 impl Server {
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false }
+        Self { backend, initialized: false, modern: false }
     }
 
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -114,7 +116,22 @@ impl Server {
             return Some(error(Value::Null, INVALID_REQUEST, "`id` must be a string or number"));
         }
         Some(match self.request(method, &params) {
-            Ok(r) => response(id, r),
+            Ok(mut r) => {
+                let modern = params
+                    .get("_meta")
+                    .and_then(|m| m.get("io.modelcontextprotocol/protocolVersion"))
+                    .and_then(Value::as_str)
+                    .map_or(self.modern, |v| v == MODERN_VERSION);
+                if modern
+                    && matches!(method, "tools/list" | "resources/list" | "resources/templates/list" | "resources/read")
+                    && let Some(result) = r.as_object_mut()
+                {
+                    result.insert("resultType".into(), json!("complete"));
+                    result.insert("ttlMs".into(), json!(if method == "resources/read" { 0 } else { 600_000 }));
+                    result.insert("cacheScope".into(), json!("private"));
+                }
+                response(id, r)
+            }
             Err((code, m)) => error(id, code, m),
         })
     }
@@ -132,6 +149,7 @@ impl Server {
             "initialize" => {
                 let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL_VERSION);
                 let version = if SUPPORTED_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSION };
+                self.modern = version == MODERN_VERSION;
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {}, "resources": {}},

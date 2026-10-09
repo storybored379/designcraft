@@ -497,3 +497,39 @@ fn conventions_panicking_backend_keeps_serving() {
     assert!(text_of(&r).contains("synthetic backend failure"));
     assert_eq!(ok(&mut s, "inspect_document", json!({}))["recovered"], true);
 }
+
+#[test]
+fn conventions_modern_results_preserve_legacy_shape() {
+    let mut s = server();
+    for (method, params) in [
+        ("tools/list", json!({})),
+        ("resources/list", json!({})),
+        ("resources/templates/list", json!({})),
+        ("resources/read", json!({"uri":"designcraft://document"})),
+        ("resources/read", json!({"uri":"designcraft://commands"})),
+    ] {
+        let legacy = rpc(&mut s, 1, method, params.clone());
+        assert!(legacy["result"].get("resultType").is_none());
+        let mut modern = params;
+        modern["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28"});
+        let r = rpc(&mut s, 2, method, modern);
+        assert_eq!(r["result"]["resultType"], "complete", "{r}");
+        assert_eq!(r["result"]["cacheScope"], "private");
+        assert_eq!(r["result"]["ttlMs"], if method == "resources/read" { 0 } else { 600_000 });
+        let mut stripped = r["result"].clone();
+        for key in ["resultType", "cacheScope", "ttlMs"] {
+            stripped.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(stripped, legacy["result"]);
+    }
+    let r = rpc(&mut s, 3, "initialize", json!({"protocolVersion":"2026-07-28"}));
+    assert_eq!(r["result"]["protocolVersion"], "2026-07-28");
+    assert_eq!(rpc(&mut s, 4, "tools/list", json!({}))["result"]["resultType"], "complete");
+    assert!(s.handle(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":999}})).is_none());
+    let r = rpc(&mut s, 5, "tools/call", json!({"name":"doc_inspect","arguments":{},"_meta":{"progressToken":"quick"}}));
+    assert_eq!(r["result"]["isError"], false);
+    let document = ok(&mut s, "doc_inspect", json!({}));
+    let resource = rpc(&mut s, 6, "resources/read", json!({"uri":"designcraft://document"}));
+    let text: Value = serde_json::from_str(resource["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, document);
+}
